@@ -1,4 +1,4 @@
-# Energy Management System ⚡
+# Energy Management System 
 
 An automated, scalable, and efficient Energy Management System (EMS) designed to monitor, control, and optimize energy consumption.
 
