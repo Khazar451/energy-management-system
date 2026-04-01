@@ -1,0 +1,103 @@
+version: '3.9'
+
+services:
+
+  # ── Microsoft SQL Server ────────────────────────────────────────────────────
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: ems-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-YourStrong!Passw0rd}"
+      MSSQL_DB: "${MSSQL_DB:-EnergyManagementDb}"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "${MSSQL_SA_PASSWORD:-YourStrong!Passw0rd}", "-C", "-Q", "SELECT 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── InfluxDB ─────────────────────────────────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: ems-influxdb
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE:         "${INFLUXDB_INIT_MODE:-setup}"
+      DOCKER_INFLUXDB_INIT_USERNAME:     "${INFLUXDB_INIT_USERNAME:-admin}"
+      DOCKER_INFLUXDB_INIT_PASSWORD:     "${INFLUXDB_INIT_PASSWORD:-adminpassword}"
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN:  "${INFLUXDB_INIT_ADMIN_TOKEN:-my-super-secret-token}"
+      DOCKER_INFLUXDB_INIT_ORG:          "${INFLUXDB_INIT_ORG:-energy-org}"
+      DOCKER_INFLUXDB_INIT_BUCKET:       "${INFLUXDB_INIT_BUCKET:-energy-bucket}"
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      retries: 5
+
+  # ── ASP.NET Core Backend API ─────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend/EnergyManagement
+      dockerfile: Dockerfile
+    container_name: ems-backend
+    environment:
+      ConnectionStrings__DefaultConnection: "Server=mssql,1433;Database=${MSSQL_DB:-EnergyManagementDb};User Id=sa;Password=${MSSQL_SA_PASSWORD:-YourStrong!Passw0rd};TrustServerCertificate=True;"
+      InfluxDB__Url:    "http://influxdb:8086"
+      InfluxDB__Token:  "${INFLUXDB_INIT_ADMIN_TOKEN:-my-super-secret-token}"
+      InfluxDB__Org:    "${INFLUXDB_INIT_ORG:-energy-org}"
+      InfluxDB__Bucket: "${INFLUXDB_INIT_BUCKET:-energy-bucket}"
+      Jwt__Key:         "${JWT_KEY:-EnergyMgmt-SuperSecret-Key-32Bytes!}"
+      Jwt__Issuer:      "${JWT_ISSUER:-EnergyManagementAPI}"
+      ASPNETCORE_ENVIRONMENT: "Development"
+      ASPNETCORE_URLS:  "http://+:5000"
+    ports:
+      - "5000:5000"
+    depends_on:
+      mssql:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+
+  # ── Python ML Service ────────────────────────────────────────────────────────
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: ems-ml
+    environment:
+      INFLUX_URL:    "http://influxdb:8086"
+      INFLUX_TOKEN:  "${INFLUXDB_INIT_ADMIN_TOKEN:-my-super-secret-token}"
+      INFLUX_ORG:    "${INFLUXDB_INIT_ORG:-energy-org}"
+      INFLUX_BUCKET: "${INFLUXDB_INIT_BUCKET:-energy-bucket}"
+    ports:
+      - "8000:8000"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  # ── Next.js Frontend ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ems-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:5000"
+      NEXT_PUBLIC_ML_URL:  "http://localhost:8000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+      - ml-service
+
+volumes:
+  mssql_data:
+  influxdb_data:
